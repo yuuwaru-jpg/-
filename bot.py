@@ -24,7 +24,7 @@ DB_PORT =
 from aiogram.client.session.aiohttp import AiohttpSession
 
 # Намертво привязываем бота к рабочему порту Hiddify (12334)
-session = AiohttpSession(proxy="http://127.0.0.1:12334") 
+session = AiohttpSession(proxy="") 
 
 # Передаем эту сессию в инициализацию бота
 bot = Bot(token=BOT_TOKEN, session=session)
