@@ -8,10 +8,10 @@ from aiogram.filters import CommandStart, Command
 logging.basicConfig(level=logging.INFO)
 
 # --- ⚙️ КОНФИГУРАЦИЯ БОТА ---
-BOT_TOKEN = "8854797738:AAF_YdTULmfd88XVz4xMeovghimv3l2ZW_I"
-PAYMENT_TOKEN = "ТОКЕН_ПЛАТЕЖА_ИЗ_BOTFATHER"  
-ADMIN_USERNAME = "yuuwaru"    
-PRICE_AMOUNT = 30000                           
+BOT_TOKEN = ""
+PAYMENT_TOKEN = ""  
+ADMIN_USERNAME = ""    
+PRICE_AMOUNT =                            
 
 # --- ⚙️ КОНФИГУРАЦИЯ ПОДКЛЮЧЕНИЯ POSTGRESQL ---
 # Измени данные ниже на свои
