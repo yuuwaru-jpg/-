@@ -15,11 +15,11 @@ PRICE_AMOUNT = 30000
 
 # --- ⚙️ КОНФИГУРАЦИЯ ПОДКЛЮЧЕНИЯ POSTGRESQL ---
 # Измени данные ниже на свои
-DB_USER = "postgres"
-DB_PASSWORD = "1234"
-DB_NAME = "payment"
-DB_HOST = "localhost"  # или IP-адрес, если база на другом сервере
-DB_PORT = 5432
+DB_USER = "
+DB_PASSWORD = ""
+DB_NAME = ""
+DB_HOST = ""  # или IP-адрес, если база на другом сервере
+DB_PORT = 
 
 from aiogram.client.session.aiohttp import AiohttpSession
 
