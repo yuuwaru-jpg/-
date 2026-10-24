@@ -1,59 +1,58 @@
 import asyncio
 import logging
+import os
+import urllib.parse
 from datetime import datetime, timedelta
-import asyncpg  # Асинхронная библиотека для PostgreSQL
+import asyncpg
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
-
-logging.basicConfig(level=logging.INFO)
-
-# --- ⚙️ КОНФИГУРАЦИЯ БОТА ---
-BOT_TOKEN = ""
-PAYMENT_TOKEN = ""  
-ADMIN_USERNAME = ""    
-PRICE_AMOUNT =                            
-
-# --- ⚙️ КОНФИГУРАЦИЯ ПОДКЛЮЧЕНИЯ POSTGRESQL ---
-# Измени данные ниже на свои
-DB_USER = "
-DB_PASSWORD = ""
-DB_NAME = ""
-DB_HOST = ""  # или IP-адрес, если база на другом сервере
-DB_PORT = 
-
 from aiogram.client.session.aiohttp import AiohttpSession
 
-# Намертво привязываем бота к рабочему порту Hiddify (12334)
-session = AiohttpSession(proxy="") 
+# Включаем логирование, чтобы видеть запуск в консоли
+logging.basicConfig(level=logging.INFO)
 
-# Передаем эту сессию в инициализацию бота
+# --- ⚙️ КОНФИГУРАЦИЯ БОТА (ТВОИ РАБОЧИЕ ДАННЫЕ) ---
+BOT_TOKEN = ""
+ADMIN_USERNAME = "yuuwaru"          # Твой юзернейм без @
+PRICE_AMOUNT = 200.00               # Цена подписки в рублях
+
+# --- ⚙️ НАСТРОЙКИ POSTGRESQL (ТВОИ РАБОЧИЕ ДАННЫЕ) ---
+DB_USER = ""
+DB_PASSWORD = ""
+DB_NAME = ""
+DB_HOST = ""
+DB_PORT = 
+
+# --- 💳 НАСТРОЙКИ КОШЕЛЬКА ЮMONEY ---
+# Замени на свой номер кошелька ЮMoney (начинается на 41001...), когда он у тебя появится
+YUMONEY_WALLET = "" 
+
+# Намертво заворачиваем трафик к Телеграму в твой запущенный Hiddify (порт 12334)
+session = AiohttpSession(proxy="")
 bot = Bot(token=BOT_TOKEN, session=session)
-
 dp = Dispatcher()
-
-# Глобальная переменная для пула соединений
 db_pool = None
 
-# --- 🗄️ РАБОТА С БАЗОЙ ДАННЫХ (POSTGRESQL) ---
+# --- 🗄️ РАБОТА С БАЗОЙ ДАННЫХ ---
 async def init_db():
     global db_pool
     db_pool = await asyncpg.create_pool(
         user=DB_USER, password=DB_PASSWORD, database=DB_NAME, host=DB_HOST, port=DB_PORT
     )
-    async with db_pool.acquire() as connection:
-        await connection.execute("""
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 tg_id BIGINT PRIMARY KEY,
                 username VARCHAR(255),
                 expire_date DATE
             )
         """)
-    logging.info("🐘 База данных PostgreSQL успешно инициализирована.")
+    logging.info("🐘 База PostgreSQL успешно инициализирована.")
 
 async def get_user_status(tg_id: int) -> str:
     async with db_pool.acquire() as connection:
-        row = await connection.fetchrow(r"SELECT expire_date FROM users WHERE tg_id = \$1", tg_id)
-    if not row:
+        row = await connection.fetchrow("SELECT expire_date FROM users WHERE tg_id = $1", tg_id)
+    if row is None or row['expire_date'] is None:
         return "❌ Подписка отсутствует"
     expire_date = row['expire_date']
     today = datetime.now().date()
@@ -63,7 +62,7 @@ async def get_user_status(tg_id: int) -> str:
 
 async def extend_subscription(tg_id: int, username: str, days: int = 30):
     async with db_pool.acquire() as connection:
-        row = await connection.fetchrow(r"SELECT expire_date FROM users WHERE tg_id = \$1", tg_id)
+        row = await connection.fetchrow("SELECT expire_date FROM users WHERE tg_id = $1", tg_id)
         today = datetime.now().date()
         if row and row['expire_date']:
             current_expire = row['expire_date']
@@ -71,44 +70,39 @@ async def extend_subscription(tg_id: int, username: str, days: int = 30):
         else:
             start_date = today
         new_expire = start_date + timedelta(days=days)
-        await connection.execute(r"""
-            INSERT INTO users (tg_id, username, expire_date) VALUES (\$1, \$2, \$3)
-            ON CONFLICT (tg_id) DO UPDATE SET username = \$2, expire_date = \$3
+        await connection.execute("""
+            INSERT INTO users (tg_id, username, expire_date) VALUES ($1, $2, $3)
+            ON CONFLICT (tg_id) DO UPDATE SET username = $2, expire_date = $3
         """, tg_id, username, new_expire)
 
+# --- ⏰ АВТОМАТИЧЕСКАЯ НАПОМИНАЛКА ДОЛЖНИКАМ ---
 async def scheduler_loop():
     while True:
-        await asyncio.sleep(86400)
+        await asyncio.sleep(86400) # Проверка базы раз в 24 часа
         logging.info("⏳ Запуск автоматической проверки подписок...")
         today = datetime.now().date()
         three_days_later = today + timedelta(days=3)
         async with db_pool.acquire() as connection:
-            rows_warn = await connection.fetch(r"SELECT tg_id FROM users WHERE expire_date = \$1", three_days_later)
+            # 1. Напоминание тем, у кого конец через 3 дня
+            rows_warn = await connection.fetch("SELECT tg_id FROM users WHERE expire_date = $1", three_days_later)
             for row in rows_warn:
-                user_id = row['tg_id']
                 try:
                     await bot.send_message(
-                        chat_id=user_id,
-                        text="⚠️ **Внимание!** Ваш доступ к IT-поддержке заканчивается через **3 дня**.\n"
-                             "Чтобы софт продолжал работать без сбоев, пожалуйста, продлите подписку в меню бота (кнопка `💳 Продлить доступ`).",
+                        chat_id=row['tg_id'],
+                        text="⚠️ **Внимание!** Ваш доступ к IT-поддержке заканчивается через **3 дня**.\nПродлите подписку кнопкой `💳 Продлить доступ`.",
                         parse_mode="Markdown"
                     )
-                except Exception as e:
-                    logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
-            rows_expired = await connection.fetch(r"SELECT tg_id FROM users WHERE expire_date = \$1", today)
+                except Exception: pass
+            # 2. Блокировка тех, у кого подписка кончилась сегодня
+            rows_expired = await connection.fetch("SELECT tg_id FROM users WHERE expire_date = $1", today)
             for row in rows_expired:
-                user_id = row['tg_id']
                 try:
                     await bot.send_message(
-                        chat_id=user_id,
-                        text="🔴 **Ваша подписка на IT-поддержку истекла.**\n"
-                             "Доступ к конфигурациям и техподдержке временно ограничен. "
-                             "Для возобновления нажмите кнопку `💳 Продлить доступ`.",
+                        chat_id=row['tg_id'],
+                        text="🔴 **Ваша подписка на IT-поддержку истекла.**\nДля возобновления нажмите кнопку `💳 Продлить доступ`.",
                         parse_mode="Markdown"
                     )
-                except Exception as e:
-                    logging.error(f"Не удалось отправить уведомление пользователю {user_id}: {e}")
-
+                except Exception: pass
 
 # --- 🎮 ИНТЕРФЕЙС БОТА ---
 def get_main_keyboard():
@@ -120,11 +114,14 @@ def get_main_keyboard():
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
+    user_id = message.from_user.id
+    username = message.from_user.username or "NoUsername"
+    await extend_subscription(user_id, username, days=0) # Авто-регистрация в Postgres с 0 дней доступа
+    
     welcome_text = (
         f"👋 **Приветствуем, {message.from_user.first_name}!**\n\n"
         "Добро пожаловать в закрытый сервис персональной IT-поддержки.\n"
-        "Здесь вы можете управлять своей подпиской на технические консультации, "
-        "оптимизацию сетевого трафика и удаленную настройку ПО.\n\n"
+        "Вы успешно внесены в систему ИТ-услуг.\n\n"
         "Используйте нижнее меню для навигации 👇"
     )
     await message.answer(welcome_text, reply_markup=get_main_keyboard(), parse_mode="Markdown")
@@ -136,32 +133,48 @@ async def menu_cabinet(message: types.Message):
         "👤 **Ваш личный кабинет**\n\n"
         f"• **Ваш ID:** `{message.from_user.id}`\n"
         f"• **Статус ИТ-поддержки:** {status}\n\n"
-        "Если ваша подписка активна, вы можете запросить актуальные конфигурации софта у администратора в ЛС."
+        "Если ваша подписка активна, вы можете запрашивать конфигурации у админа в ЛС."
     )
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(F.text == "💳 Продлить доступ")
 async def menu_pay(message: types.Message):
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Подписка на IT-поддержку",
-        description="Технические консультации, оптимизация трафика и помощь с ПО на 30 дней.",
-        payload="monthly_sub",
-        provider_token=PAYMENT_TOKEN,
-        currency="RUB",
-        prices=[types.LabeledPrice(label="Тариф 'Оптимальный'", amount=PRICE_AMOUNT)],
-        start_parameter="pay_sub"
+    user_id = message.from_user.id
+    
+    # Автоматически собираем параметры платежной формы Яндекса / ЮMoney (Quickpay)
+    params = {
+        'receiver': YUMONEY_WALLET,
+        'quickpay-form': 'button',
+        'targets': 'Оплата персональных IT-услуг',
+        'paymentType': 'SB',  # Разрешает оплату по картам и СБП
+        'sum': PRICE_AMOUNT,
+        'label': f'pay_{user_id}'  # В этот маркер намертво зашивается ID клиента для чека!
+    }
+    
+    # Формируем прямую ссылку на оплату
+    pay_url = f"https://yoomoney.ru?{urllib.parse.urlencode(params)}"
+    
+    kb = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="💳 Оплатить (СБП / Карты)", url=pay_url)],
+        [types.InlineKeyboardButton(text="👨‍💻 Написать админу после оплаты", url=f"https://t.me/{ADMIN_USERNAME}")]
+    ])
+    
+    await message.answer(
+        "🏷 **Продление доступа к IT-сервису**\n\n"
+        f"Стоимость подписки на 30 дней: **{PRICE_AMOUNT} руб.**\n\n"
+        "Нажмите на кнопку ниже, чтобы перейти к безопасной оплате картой любого банка или СБП.\n\n"
+        "⚠️ **После успешного перевода** напишите администратору в ЛС, и он сразу выдаст вам свежие конфигурации софта.",
+        reply_markup=kb,
+        parse_mode="Markdown"
     )
 
 @dp.message(F.text == "📚 Правила и Оферта")
 async def menu_rules(message: types.Message):
     text = (
         "📜 **Правовая информация**\n\n"
-        "Оплачивая услуги сервиса, вы полностью соглашаетесь с условиями публичной оферты "
-        "на оказание информационно-технических услуг.\n\n"
-        "🔗 [Читать публичную оферту](https://drive.google.com/drive/folders/1OHzXgawxvMl74kKe2NM3SW1wD8qWr5UB?usp=drive_link)\n"
-        "🔗 [Политика конфиденциальности](https://telegram.org)\n\n"
-        "Сервис предоставляется официально. Чеки формируются автоматически."
+        "Оплачивая услуги сервиса, вы соглашаетесь с условиями публичной оферты.\n\n"
+        "🔗 [Читать оферту](https://telegram.org)\n"
+        "🔗 [Политика конфиденциальности](https://telegram.org)"
     )
     await message.answer(text, parse_mode="Markdown")
 
@@ -177,41 +190,31 @@ async def menu_support(message: types.Message):
     )
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
-# --- 💳 ТЕХНИЧЕСКАЯ ОБРАБОТКА ПЛАТЕЖА ---
-@dp.pre_checkout_query()
-async def process_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@dp.message(lambda message: message.successful_payment is not None)
-async def success_payment_handler(message: types.Message):
-    user_id = message.from_user.id
-    username = message.from_user.username or "NoUsername"
-    
-    # Продлеваем подписку в PostgreSQL
-    await extend_subscription(user_id, username, days=30)
-    
-    success_text = (
-        "🎉 **Оплата успешно подтверждена!**\n\n"
-        "💰 Сумма зачислена. Ваша подписка на IT-поддержку успешно продлена на **30 дней**.\n\n"
-        f"👉 Теперь напишите администратору в ЛС [@{ADMIN_USERNAME}], отправьте ему ваш ID (`{user_id}`) "
-        "и он выдаст вам актуальные конфигурационные файлы или ключи."
-    )
-    await message.answer(success_text, parse_mode="Markdown")
+# Секретная команда для тебя (админа), чтобы вручную активировать пользователей по ID из чека
+# Формат команды в чате бота: /add_user 123456789 30
+@dp.message(Command("add_user"))
+async def cmd_add_user(message: types.Message):
+    try:
+        args = message.text.split()
+        target_id = int(args[1])  
+        days = int(args[2])       
+        await extend_subscription(target_id, "ManualAdded", days=days)
+        await message.answer(f"✅ Пользователь `{target_id}` успешно продлен в PostgreSQL на {days} дней.")
+        try:
+            await bot.send_message(target_id, f"🎉 Администратор активировал вам доступ на {days} дней!")
+        except Exception: pass
+    except Exception:
+        await message.answer("Ошибка. Формат: `/add_user ID ДНИ` \nПример: `/add_user 53123456 30`")
 
 # --- 🏁 ЗАПУСК БОТА ---
 async def main():
-    # Говорим Python НЕ пускать локальную базу данных PostgreSQL через прокси Hiddify
-    import os
-    os.environ["NO_PROXY"] = "localhost,127.0.0.1"
-    
-    # Важно: Сначала запускаем подключение к PostgreSQL
+    # Отключаем прокси Hiddify для локального подключения к PostgreSQL
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
     await init_db()
-    
-    # Запускаем фоновый планировщик напоминаний
+    # Запускаем фоновый планировщик проверки дат
     asyncio.create_task(scheduler_loop())
-    print("🚀 Бот запущен на PostgreSQL и планировщик активирован!")
+    print("🚀 Бот успешно запущен и готов к работе!")
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
